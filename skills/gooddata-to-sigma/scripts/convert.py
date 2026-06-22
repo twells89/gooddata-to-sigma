@@ -91,7 +91,8 @@ def main():
                 tgt_col = s["target"]["id"]  # target attribute id -> its column
                 keys.append({"sourceColumnId": col_by_srccol[d["id"]][s["column"]],
                              "targetColumnId": col_by_srccol[tgt][_attr_srccol(datasets, tgt, tgt_col)]})
-            rels.append({"id": sid("rel", f"{d['id']}_{tgt}"), "name": el_id[tgt].upper(),
+            tgt_table = next(x for x in datasets if x["id"] == tgt)["dataSourceTableId"]["id"]
+            rels.append({"id": sid("rel", f"{d['id']}_{tgt}"), "name": tgt_table,
                          "targetElementId": el_id[tgt], "keys": keys})
         if rels:
             el["relationships"] = rels
