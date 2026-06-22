@@ -54,12 +54,19 @@ category — AUTO (data-model metric), TIME_INTEL (→ workbook DateLookback),
 CONTEXT (→ workbook grouping/Level), UNHANDLED (logged to learned-rules). Run
 this before converting so coverage is known, not assumed.
 
+**Phase 1c — Reuse check (avoid DM sprawl).** Before creating a new data model,
+**reuse-check**: look for an existing Sigma DM with the same signature (same
+connection + tables) and reuse/pick it (`find-or-pick-dm`) rather than POSTing a
+duplicate. Only build a fresh DM when no match exists.
+
 **Phase 2 — Data model.** `scripts/convert.py` maps LDM datasets → Sigma
 warehouse-table elements (dim-before-fact; recover the path from the data-source
 db/schema so parity runs on the same warehouse), attributes/facts → columns,
 references → relationships, MAQL metrics → DM metrics (via `maql.py`); flagged
 metrics go to `flags.json`. POST the emitted spec to `/v2/dataModels/spec`
-(needs top-level `schemaVersion` + `folderId`).
+(needs top-level `schemaVersion` + `folderId`), then **read back** the created
+DM (`GET /v2/dataModels/{id}/spec`) to capture the real, server-assigned
+element/column ids — a hard gate before any workbook work (POST reassigns ids).
 ```
 python3 scripts/convert.py --workspace gd_workspace.json \
   --connection-id <sigma-conn-uuid> --db <DB> --schema <SCHEMA> \
@@ -77,6 +84,8 @@ python3 scripts/build_workbook.py --workspace gd_workspace.json \
   --data-model-id <dm-uuid> --fact-element <elId> --fact-name <TABLE> \
   --rel-name <REL_NAME> --fact-dataset <ds-id> --folder-id <folder> --out wb_spec.json
 ```
+Apply the dashboard grid **layout as the LAST write** (after all elements exist;
+a bare spec PUT wipes layout) — match GoodData's section/widget arrangement.
 
 **Phase 4 — Parity.** Query the migrated DM/workbook elements vs the **same
 warehouse** truth. NOTE: sigma-mcp-v2 `metric('<id>', t)` returns "Missing
