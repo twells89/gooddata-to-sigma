@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.DS_Store
+.token
+.sigma_env
+.gooddata_env
+exports/
+gooddata-export-*/
+samples/
+*.log
+sigma_dm_spec.json
+sigma_workbook_spec.json
+parity_keys.json
+conversion_report.md
+dm_readback.yaml
+dm_element_ids.json
+workspace_layout.json
