@@ -40,6 +40,33 @@ one consolidated gate, opt-in/out, never silent. Workspace Data Filters
 (multi-tenant child-workspace column filter) → a single user-attribute filter on
 the tenant column.
 
+## Date dimensions & FOR PREVIOUS (live findings, in progress)
+
+The translator already routes `FOR PREVIOUS/NEXT` to TIME_INTEL (→ a Sigma
+DateLookback in a date-grouped workbook element). The remaining piece is a live
+GoodData date dimension to feed a real time metric end-to-end. Findings from the
+2026-06-22 attempt (`live-date-intel` branch):
+
+- **GoodData date dimensions are "Date datasets" = `dateInstances`** in the LDM.
+  `granularities` enum (validated): `MINUTE, HOUR, DAY, WEEK, MONTH, QUARTER,
+  YEAR, MINUTE_OF_HOUR, HOUR_OF_DAY, DAY_OF_WEEK, DAY_OF_MONTH, DAY_OF_QUARTER,
+  DAY_OF_YEAR, WEEK_OF_YEAR, MONTH_OF_YEAR, QUARTER_OF_YEAR, FISCAL_MONTH,
+  FISCAL_QUARTER, FISCAL_YEAR` (NOT `WEEK_SUN_SAT`).
+- **A date link is NOT a normal `references` entry.** A `references[].identifier.type`
+  only accepts `dataset` (rejects `dateInstance`). Auto-generated models link a
+  date dimension by a **column-naming convention** (`d__date`, with a granularity
+  suffix like `d__date__day`), so the manual declarative date-reference shape
+  still needs to be harvested from a real workspace that has one (build a date
+  dim in the UI once, GET the LDM) — same harvest-from-example tactic used for
+  plugins/themes elsewhere.
+- **`ORDER_FACT` exposes only INT date keys** (`ORDER_DATE_KEY` YYYYMMDD, no DATE
+  column). Two ways to get a DATE: a SQL-backed dataset that casts it, or join
+  `CSA.TJ.DATE_DIM` (has `FULL_DATE` DATE + `DATE_KEY`).
+- **Converter work to add:** `dateInstance` → a Sigma date column (parse YYYYMMDD
+  via the date DSL, or use the joined `FULL_DATE`); `FOR PREVIOUS` →
+  `DateLookback(<measure>, "month", -1)` in a date-grouped workbook element
+  (build_workbook addition). Parity target: prior-period net revenue vs Snowflake.
+
 ## Parity strategy
 
 GoodData Cloud computes on the customer warehouse, so the same-warehouse parity
