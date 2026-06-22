@@ -44,11 +44,14 @@ def main():
         used_cols[cid] = {"id": cid, "name": name, "formula": formula}
         return cid
 
+    ds_table = {d["id"]: d["dataSourceTableId"]["id"] for d in ldm["datasets"] if d.get("dataSourceTableId")}
+
     def dim_ref(attr_id):
         a_ = attr[attr_id]
         if a_["ds"] == a.fact_dataset:
             return f"[{P}/{a_['title']}]"
-        return f"[{P}/{a.rel_name}/{a_['title']}]"  # cross-element via relationship
+        # cross-element via the relationship named after the dim's table (convert.py convention)
+        return f"[{P}/{ds_table[a_['ds']]}/{a_['title']}]"
 
     # recursively resolve a metric's MAQL to a Sigma workbook aggregate formula
     def resolve(maql):
@@ -64,34 +67,73 @@ def main():
         return out
 
     insights = {i["id"]: i for i in an["visualizationObjects"]}
-    KIND = {"local:headline": "kpi", "local:bar": "bar", "local:column": "bar"}
+    # local: viz url -> Sigma element kind. local:table is table OR pivot-table
+    # (decided by presence of a "columns" bucket). Unmapped -> flagged table.
+    CHART = {"local:bar": "bar-chart", "local:column": "bar-chart", "local:line": "line-chart",
+             "local:area": "area-chart", "local:donut": "donut-chart", "local:pie": "pie-chart"}
+    FLAGGED = {"local:funnel", "local:pyramid", "local:sankey", "local:dependencywheel",
+               "local:waterfall", "local:treemap", "local:repeater", "local:bullet"}
     SRC = {"kind": "data-model", "dataModelId": a.data_model_id, "elementId": a.fact_element}
     page_elements = []; flags = []
     cid = lambda n: re.sub(r'[^a-z0-9]', '_', n.lower())
 
-    def insight_measure(ins):
-        item = ins["content"]["buckets"][0]["items"][0]["measure"]
-        mid = item["definition"]["measureDefinition"]["item"]["identifier"]["id"]
-        return mid, item.get("title", mid), resolve(metric_maql[mid])
+    def measures_of(ins):
+        out = []
+        for b in ins["content"]["buckets"]:
+            if b["localIdentifier"] == "measures":
+                for it in b["items"]:
+                    mid = it["measure"]["definition"]["measureDefinition"]["item"]["identifier"]["id"]
+                    out.append((mid, it["measure"].get("title", mid), resolve(metric_maql[mid])))
+        return out
 
-    # each insight sources the DM fact element directly; charts auto-aggregate by axis
+    def dims_of(ins, kinds):
+        out = []
+        for b in ins["content"]["buckets"]:
+            if b["localIdentifier"] in kinds:
+                for it in b["items"]:
+                    aid = it["attribute"]["displayForm"]["identifier"]["id"].rsplit(".", 1)[0]
+                    out.append(aid)
+        return out
+
     for iid, ins in insights.items():
-        url = ins["content"]["visualizationUrl"]; kind = KIND.get(url); title = ins["title"]
-        mid, mtitle, mformula = insight_measure(ins)
-        if mformula is None:
-            flags.append({"insight": iid, "reason": f"measure {mid} uses flagged MAQL"}); continue
-        mc = cid(mtitle)
-        if kind == "kpi":
+        url = ins["content"]["visualizationUrl"]; title = ins["title"]
+        if url in FLAGGED:
+            flags.append({"insight": iid, "url": url, "reason": f"{url} has no Sigma equivalent → migrate as table or skip"}); continue
+        meas = measures_of(ins)
+        if any(f is None for _, _, f in meas):
+            flags.append({"insight": iid, "reason": "measure uses workbook-level MAQL (BY ALL / FOR)"}); continue
+        mcols = [{"id": cid(t) or m, "formula": f, "name": t} for m, t, f in meas]
+
+        if url == "local:headline":          # KPI
             page_elements.append({"id": iid, "kind": "kpi-chart", "name": title, "source": SRC,
-                "columns": [{"id": mc, "formula": mformula, "name": mtitle}], "value": {"columnId": mc}})
-        elif kind == "bar":
-            aid = ins["content"]["buckets"][1]["items"][0]["attribute"]["displayForm"]["identifier"]["id"].rsplit(".", 1)[0]
-            dname = attr[aid]["title"]; dc = cid(dname)
-            page_elements.append({"id": iid, "kind": "bar-chart", "name": title, "source": SRC,
-                "columns": [{"id": dc, "formula": dim_ref(aid), "name": dname},
-                            {"id": mc, "formula": mformula, "name": mtitle}],
-                "xAxis": {"columnId": dc}, "yAxis": {"columnIds": [mc]},
-                **({"orientation": "horizontal"} if url == "local:bar" else {})})
+                "columns": mcols[:1], "value": {"columnId": mcols[0]["id"]}})
+        elif url == "local:table":            # table (flat) or pivot-table (has columns shelf)
+            rows = dims_of(ins, {"attribute", "view"}); colshelf = dims_of(ins, {"columns"})
+            dcols = [{"id": cid(attr[a_]["title"]), "formula": dim_ref(a_), "name": attr[a_]["title"]} for a_ in rows + colshelf]
+            if colshelf:                      # pivot
+                page_elements.append({"id": iid, "kind": "pivot-table", "name": title, "source": SRC,
+                    "columns": dcols + mcols, "values": [c["id"] for c in mcols],
+                    "rowsBy": [{"id": cid(attr[a_]["title"])} for a_ in rows],
+                    "columnsBy": [{"id": cid(attr[a_]["title"])} for a_ in colshelf]})
+            else:                             # flat aggregated table
+                page_elements.append({"id": iid, "kind": "table", "name": title, "source": SRC,
+                    "columns": dcols + mcols,
+                    "groupings": [{"id": "g", "groupBy": [c["id"] for c in dcols], "calculations": [c["id"] for c in mcols]}]})
+        elif url in CHART:                    # bar/column/line/area/donut/pie
+            kind = CHART[url]; dims = dims_of(ins, {"view", "segment", "stack"})
+            dcols = [{"id": cid(attr[a_]["title"]), "formula": dim_ref(a_), "name": attr[a_]["title"]} for a_ in dims]
+            el = {"id": iid, "kind": kind, "name": title, "source": SRC, "columns": dcols + mcols}
+            if kind in ("donut-chart", "pie-chart"):
+                # donut/pie kept value/color as {id} (only KPI moved to columnId, 2026-06-11)
+                el["value"] = {"id": mcols[0]["id"]}
+                if dcols: el["color"] = {"id": dcols[0]["id"]}
+            else:
+                if dcols: el["xAxis"] = {"columnId": dcols[0]["id"]}
+                el["yAxis"] = {"columnIds": [c["id"] for c in mcols]}
+                if url == "local:bar": el["orientation"] = "horizontal"
+            page_elements.append(el)
+        else:
+            flags.append({"insight": iid, "url": url, "reason": f"unmapped visualizationUrl {url}"})
 
     # ---- TIME_INTEL: FOR PREVIOUS/NEXT metrics -> date-grouped trend + DateLookback ----
     # Wire each dateInstance to the dataset/column that holds its DATE column
