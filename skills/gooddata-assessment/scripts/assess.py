@@ -1,64 +1,72 @@
 #!/usr/bin/env python3
 """assess.py — GoodData estate migration-readiness readout (read-only).
 
-STUB. Reuses discover.py's declarative export, then scores it against the
-gooddata-to-sigma converter coverage. Full scoring tables land once live
-discovery is validated and the converter's real coverage is known.
+Pulls the declarative workspace layout (no writes) and scores it against what
+gooddata-to-sigma actually converts: MAQL coverage by category (reusing the
+converter's own translator), insight visualization-type mix, and a per-dashboard
+AUTO / HINT / MANUAL tag. Honest scoring — uses the real translator, not guesses.
 
 Usage:
   eval "$(../gooddata-to-sigma/scripts/get-token.sh)"
-  python3 assess.py --workspace <id>     # or --all
+  python3 assess.py --workspace <id>            # or --all
 """
-import argparse, json, os, sys, urllib.request, urllib.error
+import argparse, json, os, ssl, sys, urllib.request, urllib.error
 
-# MAQL constructs that drive conversion risk (see ../gooddata-to-sigma/refs/maql-mapping.md)
-MAQL_RISK = ["BY ALL", "WITHIN", " BY ", "WHERE", "FOR PREVIOUS", "FOR NEXT", "TOP(", "BOTTOM("]
-# insight types the converter handles cleanly today (see viz-type-mapping.md)
-AUTO_VIZ = {"local:headline", "local:table", "local:column", "local:bar",
-            "local:line", "local:area", "local:pie", "local:donut",
-            "local:combo", "local:combo2", "local:scatter", "local:bubble"}
-FLAG_VIZ = {"local:funnel", "local:pyramid", "local:sankey",
-            "local:dependencywheel", "local:waterfall", "local:treemap", "local:repeater"}
+# reuse the converter's MAQL translator for honest scoring
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "gooddata-to-sigma", "scripts"))
+from maql import translate  # noqa: E402
+
+_CTX = ssl.create_default_context()
+if os.environ.get("GOODDATA_TLS_VERIFY") != "1":
+    _CTX.check_hostname = False; _CTX.verify_mode = ssl.CERT_NONE
+
+AUTO_VIZ = {"local:headline", "local:table", "local:pivot", "local:column", "local:bar",
+            "local:line", "local:area", "local:pie", "local:donut", "local:combo",
+            "local:combo2", "local:scatter", "local:bubble"}
 
 
 def api(path):
     host = os.environ["GOODDATA_HOST"].rstrip("/")
-    req = urllib.request.Request(host + path)
-    req.add_header("Authorization", f"Bearer {os.environ['GOODDATA_TOKEN']}")
-    req.add_header("Accept", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        sys.exit(f"GET {path} -> {e.code}: {e.read()[:300].decode(errors='replace')}")
+    req = urllib.request.Request(host + path, headers={
+        "Authorization": f"Bearer {os.environ['GOODDATA_TOKEN']}", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=60, context=_CTX) as r:
+        return json.load(r)
 
 
 def assess(ws):
     layout = api(f"/api/v1/layout/workspaces/{ws}?exclude=ACTIVITY_INFO")
-    an = layout.get("analytics", {}) or {}
-    metrics = an.get("metrics", []) or []
-    insights = an.get("visualizationObjects", []) or []
-    dashboards = an.get("analyticalDashboards", []) or []
+    ldm = layout.get("ldm", {}) or {}; an = layout.get("analytics", {}) or {}
+    syms = {"fact": {}, "attribute": {}, "metric": {}}
+    for d in ldm.get("datasets", []):
+        for at in d.get("attributes", []): syms["attribute"][at["id"]] = at.get("title") or at["id"]
+        for f in d.get("facts", []): syms["fact"][f["id"]] = f.get("title") or f["id"]
+    for m in an.get("metrics", []): syms["metric"][m["id"]] = m.get("title") or m["id"]
 
-    risk = {}
+    metrics = an.get("metrics", []); insights = an.get("visualizationObjects", []); dashboards = an.get("analyticalDashboards", [])
+    cats = {}
     for m in metrics:
-        maql = ((m.get("content") or {}).get("maql") or "").upper()
-        for k in MAQL_RISK:
-            if k.strip() and k in maql:
-                risk[k.strip()] = risk.get(k.strip(), 0) + 1
-
-    viz = {}
+        c = translate((m.get("content") or {}).get("maql", ""), syms).get("category", "UNHANDLED")
+        cats[c] = cats.get(c, 0) + 1
+    viz = {}; insights_by = {i["id"]: i for i in insights}
     for i in insights:
-        url = (i.get("content") or {}).get("visualizationUrl") or "?"
-        viz[url] = viz.get(url, 0) + 1
-    flagged = sum(v for k, v in viz.items() if k in FLAG_VIZ)
+        u = i["content"].get("visualizationUrl", "?"); viz[u] = viz.get(u, 0) + 1
+    flagged_viz = sum(v for k, v in viz.items() if k not in AUTO_VIZ)
 
-    print(f"=== {ws} ===")
-    print(f"  metrics {len(metrics)} | insights {len(insights)} | dashboards {len(dashboards)}")
-    print(f"  MAQL risk constructs: {risk or 'none'}")
-    print(f"  insight types: {viz}")
-    print(f"  flagged (non-auto) insights: {flagged}")
-    print("  [STUB] per-dashboard AUTO/HINT/MANUAL/UNHANDLED scoring + shortlist TBD")
+    print(f"\n=== {ws} ===")
+    print(f"  datasets {len(ldm.get('datasets', []))} | metrics {len(metrics)} | insights {len(insights)} | dashboards {len(dashboards)}")
+    print(f"  MAQL coverage: {cats}")
+    print(f"  insight types: {viz}  (non-auto: {flagged_viz})")
+    # per-dashboard tag
+    for d in dashboards:
+        iids = [it.get("widget", {}).get("insight", {}).get("identifier", {}).get("id")
+                for s in d["content"].get("layout", {}).get("sections", []) for it in s.get("items", [])]
+        urls = [insights_by[i]["content"].get("visualizationUrl") for i in iids if i in insights_by]
+        bad_viz = [u for u in urls if u not in AUTO_VIZ]
+        tag = "UNHANDLED" if (cats.get("UNHANDLED") or bad_viz) else \
+              "MANUAL" if (cats.get("CONTEXT") or cats.get("TIME_INTEL")) else \
+              "HINT" if flagged_viz else "AUTO"
+        print(f"  dashboard '{d.get('title')}': {len(iids)} widgets -> {tag}")
 
 
 def main():
@@ -67,8 +75,8 @@ def main():
     ap.add_argument("--all", action="store_true")
     a = ap.parse_args()
     if a.all:
-        for w in (api("/api/v1/layout/workspaces").get("workspaces") or []):
-            assess(w.get("id"))
+        for w in api("/api/v1/entities/workspaces").get("data", []):
+            assess(w["id"])
     elif a.workspace:
         assess(a.workspace)
     else:

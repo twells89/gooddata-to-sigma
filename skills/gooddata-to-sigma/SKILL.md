@@ -17,11 +17,14 @@ user-invocable: true
 
 # GoodData → Sigma
 
-> **Status: research spike complete, converter not yet built or live-validated.**
-> The design is documented and verified against GoodData's docs; the discovery
-> client is functional but unproven on a live workspace. Build order and risks
-> are in `refs/design-notes.md`. **Do not claim a conversion works until it has
-> passed live parity.**
+> **Status: LIVE-VALIDATED — exact parity, data model + workbook.**
+> Proven end-to-end on a GoodData Cloud trial → Sigma (both on Snowflake): a
+> workspace (LDM + MAQL metrics + insights + dashboard) migrated to a Sigma data
+> model + workbook with **exact parity** on metrics and the relationship-backed
+> by-region breakdown; the `BY ALL` share metric was correctly flagged. Build
+> order, risks, and remaining work (live FOR-PREVIOUS date-intel) are in
+> `refs/design-notes.md`. Still: **never claim a specific conversion works until
+> it passes live parity for that workspace.**
 
 Recreate a GoodData workspace in Sigma, in the same phase structure as the
 sibling converters (Tableau, Power BI, Qlik, Cognos, MicroStrategy, SSRS, …).
@@ -45,20 +48,39 @@ readiness readout before committing to a conversion.
 (full LDM + analytics model). Confirm counts and the MAQL-keyword / insight-type
 histograms it prints.
 
-**Phase 2 — Data model.** Map LDM datasets → Sigma sources (recover the
-warehouse path from the data-source mapping so parity runs on the same
-warehouse), attributes/labels → dimension columns, facts → numeric columns,
-references → relationships. Translate MAQL metrics → Sigma DM metrics/formulas
-per `maql-mapping.md`. Build the DM via the Sigma REST API (sigma-data-models).
+**Phase 1b — Gap-scout (measure MAQL coverage first).**
+`python3 scripts/scan_gaps.py --workspace gd_workspace.json` reports coverage by
+category — AUTO (data-model metric), TIME_INTEL (→ workbook DateLookback),
+CONTEXT (→ workbook grouping/Level), UNHANDLED (logged to learned-rules). Run
+this before converting so coverage is known, not assumed.
 
-**Phase 3 — Workbook.** Map insights → elements and dashboards → pages + layout
-per `viz-type-mapping.md`; `filterContext` → controls scoped to referencing
-pages. Author the workbook spec via **sigma-workbooks** (formula qualification,
-the `name: ' '` KPI-title rule, theming, layout). Reuse the shared
-`build-charts-from-signals` + `decollide_bands` + the mandatory visual-QA gate.
+**Phase 2 — Data model.** `scripts/convert.py` maps LDM datasets → Sigma
+warehouse-table elements (dim-before-fact; recover the path from the data-source
+db/schema so parity runs on the same warehouse), attributes/facts → columns,
+references → relationships, MAQL metrics → DM metrics (via `maql.py`); flagged
+metrics go to `flags.json`. POST the emitted spec to `/v2/dataModels/spec`
+(needs top-level `schemaVersion` + `folderId`).
+```
+python3 scripts/convert.py --workspace gd_workspace.json \
+  --connection-id <sigma-conn-uuid> --db <DB> --schema <SCHEMA> \
+  --folder-id <sigma-folder> --out dm_spec.json --flags flags.json
+```
 
-**Phase 4 — Parity.** Post-and-readback + assert-parity for every metric/insight
-against the **same warehouse**; apply dashboard filter context when checking.
+**Phase 3 — Workbook.** `scripts/build_workbook.py` maps insights →
+kpi-chart/bar-chart (each sourcing the migrated DM fact element; charts
+auto-aggregate by axis), recursively inlines metric MAQL into measure formulas,
+and resolves a related-dataset `view` attribute to a cross-element reference
+`[FACT/REL_NAME/Dim]` (exercises the migrated relationship). POST to
+`/v2/workbooks/spec`. Defers chart/layout/theming idioms to **sigma-workbooks**.
+```
+python3 scripts/build_workbook.py --workspace gd_workspace.json \
+  --data-model-id <dm-uuid> --fact-element <elId> --fact-name <TABLE> \
+  --rel-name <REL_NAME> --fact-dataset <ds-id> --folder-id <folder> --out wb_spec.json
+```
+
+**Phase 4 — Parity.** Query the migrated DM/workbook elements vs the **same
+warehouse** truth. NOTE: sigma-mcp-v2 `metric('<id>', t)` returns "Missing
+Metric" (a known MCP bug) — parity-query the columns/formulas directly instead.
 
 **Phase 5 — Repoint.** Finalize workbook element sources onto the built DM —
 never skip.

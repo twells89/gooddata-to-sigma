@@ -7,7 +7,16 @@ converters (Tableau, Power BI, Qlik, ThoughtSpot, QuickSight, Cognos,
 MicroStrategy, SSRS). Built standalone so it can graduate into that
 marketplace's `plugins/`.
 
-## Status: research spike complete — scaffold only, not yet built or live-validated
+## Status: LIVE-VALIDATED — exact parity (data model + workbook)
+
+Proven end-to-end on a GoodData Cloud trial → Sigma, both on Snowflake: a
+workspace (LDM + 6 MAQL metrics + 5 insights + a dashboard) migrated to a Sigma
+**data model** (5/6 metrics translated, exact parity — Net Revenue 117,040.63,
+Orders 696, AOV 168.16; the `BY ALL` share metric correctly **flagged**) and a
+Sigma **workbook** (KPIs + bar charts; the by-region breakdown exact via the
+migrated relationship). MAQL coverage on that workspace: 5 AUTO / 1 CONTEXT / 0
+unhandled. Remaining: live FOR-PREVIOUS date-intel (translator routes it to a
+workbook DateLookback; not yet exercised on a live date dimension).
 
 The migration design is grounded in a verified read of GoodData's current
 public docs (June 2026). The spike findings live in
