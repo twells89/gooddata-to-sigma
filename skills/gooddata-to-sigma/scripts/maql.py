@@ -38,18 +38,36 @@ def translate(maql, syms):
             return {"ok": False, "formula": None, "category": "CONTEXT",
                     "reason": f"context aggregation '{kw.strip()}' → Sigma workbook grouping / Level-scoped aggregate (workbook-level, not a DM metric)"}
 
+    # WHERE filter -> conditional aggregate (SumIf/AvgIf/.../CountDistinctIf).
+    # Split off the WHERE clause and translate the predicate; aggregates below
+    # then emit their *If variants. MEDIAN+WHERE has no Sigma *If → unhandled.
+    cond = None
+    parts = re.split(r"\sWHERE\s", body, maxsplit=1, flags=re.I)
+    if len(parts) == 2:
+        body, where = parts[0].strip(), parts[1].strip()
+        c = re.sub(r"\{label/([^.}]+)\.[^}]+\}", lambda m: _ref(syms, "attribute", m.group(1)) or m.group(0), where)
+        c = re.sub(r"\{attribute/([^}]+)\}", lambda m: _ref(syms, "attribute", m.group(1)) or m.group(0), c)
+        if re.search(r"\{[^}]+\}", c):
+            return {"ok": False, "formula": None, "category": "UNHANDLED",
+                    "reason": f"WHERE predicate has an unresolved reference: {where[:60]}"}
+        cond = c.strip()
+        if re.search(r"\bMEDIAN\b", body, re.I):
+            return {"ok": False, "formula": None, "category": "UNHANDLED",
+                    "reason": "MEDIAN with WHERE has no Sigma conditional-aggregate equivalent"}
+
     out = body
-    # COUNT({attribute/x}) -> CountDistinct([Name])  (GoodData COUNT of an attribute = distinct)
+    # COUNT({attribute/x}) -> CountDistinct([Name]) (GoodData COUNT of an attribute = distinct)
     def count_attr(m):
         r = _ref(syms, "attribute", m.group(1))
-        return f"CountDistinct({r})" if r else m.group(0)
+        if not r: return m.group(0)
+        return f"CountDistinctIf({r}, {cond})" if cond else f"CountDistinct({r})"
     out = re.sub(r"COUNT\(\s*\{attribute/([^}]+)\}\s*\)", count_attr, out, flags=re.I)
 
-    # AGG({fact/x}) and AGG(<expr of facts>) -> Sigma agg
+    # AGG({fact/x}) and AGG(<expr of facts>) -> Sigma agg (conditional when WHERE present)
     def agg_fact(m):
         fn = AGG[m.group(1).upper()]
         inner = m.group(2)
-        return f"{fn}({inner})"
+        return f"{fn}If({inner}, {cond})" if cond else f"{fn}({inner})"
     # first resolve fact refs to column names inside any expression
     def fact_ref(m):
         r = _ref(syms, "fact", m.group(1))
