@@ -40,12 +40,32 @@ one consolidated gate, opt-in/out, never silent. Workspace Data Filters
 (multi-tenant child-workspace column filter) → a single user-attribute filter on
 the tenant column.
 
-## Date dimensions & FOR PREVIOUS (live findings, in progress)
+## Date dimensions & FOR PREVIOUS — LIVE-VALIDATED, exact parity (all via API)
 
-The translator already routes `FOR PREVIOUS/NEXT` to TIME_INTEL (→ a Sigma
-DateLookback in a date-grouped workbook element). The remaining piece is a live
-GoodData date dimension to feed a real time metric end-to-end. Findings from the
-2026-06-22 attempt (`live-date-intel` branch):
+**Closed 2026-06-22, entirely via the API (no UI).** GoodData date dimension +
+`FOR PREVIOUS` metric built through the declarative/entity APIs; migrated to a
+Sigma monthly-trend element whose `DateLookback` prior-month column matches the
+Snowflake monthly baseline **exactly** (2024-02 prev = 2,947.38 = Jan, etc.).
+
+Cracked recipe:
+- **Date reference shape** (the blocker): a dataset links a date dimension via a
+  normal `references` entry with `identifier.type: "dataset"` (pointing at the
+  dateInstance id) and a DATE source column whose **`sources[].target.type` is
+  `"date"`** (NOT `"dateInstance"` — that was the 400). `dateInstances[]` defines
+  the dimension (`granularities: DAY/WEEK/MONTH/QUARTER/YEAR`). Put the date ref
+  on the dataset that owns a DATE column (here `DATE_DIM.FULL_DATE`); bridge the
+  fact via a normal `order→DATE_DIM` reference on the INT key.
+- **MAQL time metric:** `SELECT {metric/m_net_revenue} FOR PREVIOUS({label/order_date.month})`.
+- **Converter (`convert.py`):** skip date references when building Sigma
+  *relationships* (target.type=="date") — the date column is just a plain column
+  (the FK-column pass already surfaces `FULL_DATE` as a column, reachable from
+  the fact via the `DATE_DIM` relationship).
+- **Sigma output:** date-grouped element (`DateTrunc("month", [FACT/DATE_DIM/Full Date])`)
+  with `DateLookback(Sum([FACT/Net Revenue]), [Month], 1, "month")` for prior month.
+  This is the auto-emit target for `build_workbook` on a TIME_INTEL metric (recipe
+  proven; generalization is the small remaining converter step).
+
+Original findings (for reference):
 
 - **GoodData date dimensions are "Date datasets" = `dateInstances`** in the LDM.
   `granularities` enum (validated): `MINUTE, HOUR, DAY, WEEK, MONTH, QUARTER,

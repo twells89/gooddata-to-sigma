@@ -86,6 +86,11 @@ def main():
         rels = []
         for r in d.get("references", []):
             tgt = r["identifier"]["id"]
+            # date-dimension references (sources[].target.type == "date") link to a
+            # dateInstance, not a dataset — the date column is already a plain column;
+            # skip (no Sigma relationship). The date column stays available for grouping.
+            if any((s.get("target") or {}).get("type") == "date" for s in r.get("sources", [])):
+                continue
             keys = []
             for s in r.get("sources", []):
                 tgt_col = s["target"]["id"]  # target attribute id -> its column
