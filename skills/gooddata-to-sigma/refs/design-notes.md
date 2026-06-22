@@ -88,6 +88,18 @@ Original findings (for reference):
   `DateLookback(<measure>, "month", -1)` in a date-grouped workbook element
   (build_workbook addition). Parity target: prior-period net revenue vs Snowflake.
 
+## Dashboard layout (implemented)
+
+`build_workbook` emits one Sigma page per GoodData dashboard and a top-level
+`layout` XML built from the dashboard's own grid: each `layout.sections[]` → a row
+band, each widget's `size.xl.gridWidth` (GoodData 12-col) → a Sigma 24-col span
+(×2), KPIs short / charts+tables taller. Applied as the LAST write (a bare spec
+stacks every element full-width). Non-dashboard auto-elements (e.g. the FOR
+PREVIOUS trend) go on an "Other" page. Rendered result: KPI strip + 2-up charts,
+structurally faithful to the source dashboard. (Pixel side-by-side pending — the
+GoodData trial visual-export API 500'd; layout is derived from the dashboard spec
+so it mirrors by construction.)
+
 ## Parity strategy
 
 GoodData Cloud computes on the customer warehouse, so the same-warehouse parity

@@ -174,11 +174,68 @@ def main():
                  "formula": f'DateLookback({base_formula}, [{gran.capitalize()}], {off}, "{gran}")'}],
             "groupings": [{"id": "ti_g", "groupBy": ["ti_period"], "calculations": ["ti_base", "ti_prior"]}]})
 
+    # ---- LAYOUT: one Sigma page per GoodData dashboard, grid from its sections ----
+    # GoodData dashboards use a 12-col grid (widget size.xl.gridWidth); Sigma uses
+    # 24 cols. Map section→row band, gridWidth→column span (×2), apply layout XML
+    # as the LAST write (a bare spec without it stacks every element full-width).
+    elem_by_id = {e["id"]: e for e in page_elements}
+    KPI_H, BODY_H, GAP = 6, 13, 1
+
+    def widget_iid(it):
+        return (((it.get("widget") or {}).get("insight") or {}).get("identifier") or {}).get("id")
+
+    dash_of = {}
+    for d in an.get("analyticalDashboards", []):
+        for sec in d["content"].get("layout", {}).get("sections", []):
+            for it in sec.get("items", []):
+                iid = widget_iid(it)
+                if iid and iid in elem_by_id and iid not in dash_of:
+                    dash_of[iid] = d["id"]
+
+    def page_xml(pid, placed):
+        rows = "\n".join(f'  <LayoutElement elementId="{e}" gridColumn="{c} / {c+cs}" gridRow="{r} / {r+rs}"/>'
+                         for e, c, cs, r, rs in placed)
+        return f'<Page type="grid" gridTemplateColumns="repeat(24, 1fr)" gridTemplateRows="auto" id="{pid}">\n{rows}\n</Page>'
+
+    def layout_for(d, present):
+        placed = []; row = 1
+        for sec in d["content"].get("layout", {}).get("sections", []):
+            items = [it for it in sec.get("items", []) if widget_iid(it) in present]
+            if not items: continue
+            col = 1; maxh = 0
+            for it in items:
+                iid = widget_iid(it)
+                gw = (((it.get("size") or {}).get("xl") or {}).get("gridWidth")) or 6
+                cspan = max(2, min(24, int(gw) * 2))
+                if col + cspan > 25:
+                    col = 1; row += maxh + GAP; maxh = 0
+                h = KPI_H if elem_by_id[iid]["kind"] == "kpi-chart" else BODY_H
+                placed.append((iid, col, cspan, row, h)); col += cspan; maxh = max(maxh, h)
+            row += maxh + GAP
+        return placed
+
+    pages, xml_pages = [], []
+    for d in an.get("analyticalDashboards", []):
+        present = [iid for iid in elem_by_id if dash_of.get(iid) == d["id"]]
+        if not present: continue
+        pid = cid(d.get("title") or d["id"])
+        pages.append({"id": pid, "name": d.get("title") or d["id"], "elements": [elem_by_id[iid] for iid in present]})
+        xml_pages.append(page_xml(pid, layout_for(d, set(present))))
+
+    orphans = [e for e in page_elements if e["id"] not in dash_of]  # e.g. FOR PREVIOUS trend
+    if orphans:
+        placed, row = [], 1
+        for e in orphans:
+            h = KPI_H if e["kind"] == "kpi-chart" else BODY_H
+            placed.append((e["id"], 1, 24, row, h)); row += h + GAP
+        pages.append({"id": "extras", "name": "Other", "elements": orphans})
+        xml_pages.append(page_xml("extras", placed))
+
     spec = {"name": layout.get("name") or "GoodData Migration", "schemaVersion": 1, "folderId": a.folder_id,
-            "pages": [{"id": "p1", "name": an["analyticalDashboards"][0]["title"], "elements": page_elements}]}
+            "pages": pages, "layout": "\n".join(xml_pages)}
     json.dump(spec, open(a.out, "w"), indent=2)
-    print(f"workbook -> {a.out}: master + {len(page_elements)} elements ({len(used_cols)} master cols), {len(flags)} flagged")
-    for e in page_elements: print("   ", e["kind"], e["name"])
+    print(f"workbook -> {a.out}: {len(pages)} page(s), {len(page_elements)} elements, {len(flags)} flagged")
+    for p in pages: print(f"   page '{p['name']}': {len(p['elements'])} elements")
     for fl in flags: print("   FLAG", fl)
 
 
