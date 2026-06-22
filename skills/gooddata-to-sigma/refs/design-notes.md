@@ -62,8 +62,9 @@ Cracked recipe:
   the fact via the `DATE_DIM` relationship).
 - **Sigma output:** date-grouped element (`DateTrunc("month", [FACT/DATE_DIM/Full Date])`)
   with `DateLookback(Sum([FACT/Net Revenue]), [Month], 1, "month")` for prior month.
-  This is the auto-emit target for `build_workbook` on a TIME_INTEL metric (recipe
-  proven; generalization is the small remaining converter step).
+  **`build_workbook` now AUTO-emits this** for any `FOR PREVIOUS/NEXT` metric —
+  date-grouped table (`DateTrunc`) + `DateLookback(base, [Period], n, unit)` —
+  validated at exact prior-month parity (no hand-authoring).
 
 Original findings (for reference):
 
