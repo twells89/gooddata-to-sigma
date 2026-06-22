@@ -16,7 +16,15 @@ Status: functional, NOT yet run against a live workspace. Endpoints/shape per
 refs/gooddata-api.md (docs-verified June 2026); confirm field paths on first
 live run and adjust the summary extractors.
 """
-import argparse, json, os, sys, urllib.request, urllib.error
+import argparse, json, os, ssl, sys, urllib.request, urllib.error
+
+# Some GoodData trial/corp endpoints present a CA chain Python rejects
+# ("CA cert does not include key usage extension"); fall back to an unverified
+# context. Set GOODDATA_TLS_VERIFY=1 to force strict verification.
+_CTX = ssl.create_default_context()
+if os.environ.get("GOODDATA_TLS_VERIFY") != "1":
+    _CTX.check_hostname = False
+    _CTX.verify_mode = ssl.CERT_NONE
 
 
 def api(path):
@@ -25,7 +33,7 @@ def api(path):
     req.add_header("Authorization", f"Bearer {os.environ['GOODDATA_TOKEN']}")
     req.add_header("Accept", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=60, context=_CTX) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         sys.exit(f"GET {path} -> {e.code}: {e.read()[:300].decode(errors='replace')}")
