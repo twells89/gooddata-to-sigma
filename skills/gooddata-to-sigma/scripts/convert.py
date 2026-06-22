@@ -105,7 +105,7 @@ def main():
         if res["ok"]:
             metrics.append({"id": sid("m", m["id"]), "name": m.get("title") or m["id"], "formula": res["formula"]})
         else:
-            flags.append({"metric": m["id"], "title": m.get("title"),
+            flags.append({"metric": m["id"], "title": m.get("title"), "category": res.get("category"),
                           "maql": (m.get("content") or {}).get("maql"), "reason": res["reason"]})
     if metrics:
         fact_el["metrics"] = metrics

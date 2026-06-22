@@ -12,8 +12,11 @@ translate(maql, syms) -> {"ok": bool, "formula": str|None, "reason": str|None}
 import re
 
 AGG = {"SUM": "Sum", "AVG": "Avg", "MIN": "Min", "MAX": "Max", "MEDIAN": "Median"}
-# context / time keywords with no clean pure-metric Sigma equivalent (workbook-level)
-FLAG_KW = ["BY ALL", "WITHIN", "FOR PREVIOUS", "FOR NEXT", "FOR ", " BY "]
+# Hard MAQL surface, categorized so flags are actionable (not just "unsupported").
+# These are workbook-level constructs, NOT data-model metrics — they route to the
+# workbook builder, not the DM. category drives gap-scout / assessment reporting.
+TIME_KW = ["FOR PREVIOUS", "FOR NEXT", "FOR "]      # -> Sigma DateLookback in a date-grouped element
+CONTEXT_KW = ["BY ALL", "WITHIN", " BY "]            # -> Sigma grouping / Level-scoped aggregate
 
 
 def _ref(syms, kind, gid):
@@ -25,12 +28,15 @@ def translate(maql, syms):
     src = " ".join(maql.split())
     body = re.sub(r"^\s*SELECT\s+", "", src, flags=re.I).strip()
 
-    # flag the hard context/time surface before anything else
     up = body.upper()
-    for kw in FLAG_KW:
+    for kw in TIME_KW:
         if kw in up:
-            return {"ok": False, "formula": None,
-                    "reason": f"MAQL context/time keyword '{kw.strip()}' has no pure data-model-metric equivalent (workbook-level); flagged"}
+            return {"ok": False, "formula": None, "category": "TIME_INTEL",
+                    "reason": f"time transform '{kw.strip()}' → Sigma DateLookback in a date-grouped workbook element (workbook-level, not a DM metric)"}
+    for kw in CONTEXT_KW:
+        if kw in up:
+            return {"ok": False, "formula": None, "category": "CONTEXT",
+                    "reason": f"context aggregation '{kw.strip()}' → Sigma workbook grouping / Level-scoped aggregate (workbook-level, not a DM metric)"}
 
     out = body
     # COUNT({attribute/x}) -> CountDistinct([Name])  (GoodData COUNT of an attribute = distinct)
@@ -60,10 +66,10 @@ def translate(maql, syms):
     # leftover unresolved object refs => unhandled
     leftover = re.search(r"\{(fact|attribute|metric|label)/([^}]+)\}", out)
     if leftover:
-        return {"ok": False, "formula": None,
+        return {"ok": False, "formula": None, "category": "UNHANDLED",
                 "reason": f"unresolved MAQL reference {leftover.group(0)}"}
 
-    return {"ok": True, "formula": out.strip(), "reason": None}
+    return {"ok": True, "formula": out.strip(), "category": "AUTO", "reason": None}
 
 
 if __name__ == "__main__":

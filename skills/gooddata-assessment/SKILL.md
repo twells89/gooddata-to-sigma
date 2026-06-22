@@ -19,8 +19,9 @@ Read-only migration-readiness readout for a GoodData Cloud / .CN estate. Pulls
 the declarative layout (no writes) and scores it against what
 `gooddata-to-sigma` can actually convert.
 
-> Status: scaffold. The scanner (`scripts/assess.py`) is a stub pending the live
-> discovery validation and the converter's real coverage table.
+> Status: working + live-validated. `scripts/assess.py` reuses the converter's
+> own MAQL translator for honest coverage scoring (no guessing) and tags each
+> dashboard AUTO / HINT / MANUAL / UNHANDLED.
 
 ## What it reports
 
