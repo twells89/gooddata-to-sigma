@@ -26,6 +26,7 @@ def main():
     ap.add_argument("--rel-name", required=True)
     ap.add_argument("--fact-dataset", required=True)
     ap.add_argument("--folder-id", required=True)
+    ap.add_argument("--dashboard", default=None, help="migrate only this dashboard id (+ its filterContext)")
     ap.add_argument("--out", default="wb_spec.json")
     a = ap.parse_args()
     P = a.fact_name  # element-name prefix for formulas
@@ -36,7 +37,29 @@ def main():
     for d in ldm["datasets"]:
         for at in d.get("attributes", []): attr[at["id"]] = {"title": at["title"], "ds": d["id"]}
         for f in d.get("facts", []): fact[f["id"]] = {"title": f["title"], "ds": d["id"]}
-    for m in an.get("metrics", []): metric_maql[m["id"]] = (m.get("content") or {}).get("maql", "")
+    metric_fmt = {}
+    for m in an.get("metrics", []):
+        metric_maql[m["id"]] = (m.get("content") or {}).get("maql", "")
+        metric_fmt[m["id"]] = (m.get("content") or {}).get("format")
+
+    # GoodData number format -> Sigma formatString (kind:number). Best-effort mapping.
+    def gd_fmt(g):
+        if not g:
+            return None
+        dec = 0
+        if "." in g:
+            dec = len(g.split(".", 1)[1].split("%")[0].rstrip("0")) or len(g.split(".", 1)[1].split("%")[0])
+        cur = "$" if "$" in g else ("€" if "€" in g else "")
+        if "%" in g:
+            return {"kind": "number", "formatString": f",.{dec}%"}
+        return {"kind": "number", "formatString": f"{cur},.{dec}f"}
+
+    # bake a dashboard filter predicate into a measure: wrap top-level aggregates as *If
+    def apply_filter(formula, cond):
+        if not cond:
+            return formula
+        return re.sub(r"\b(Sum|Avg|Min|Max|Median|CountDistinct|Count)\(([^()]*)\)",
+                      lambda m: f"{m.group(1)}If({m.group(2)}, {cond})", formula)
 
     used_cols = {}  # master column id -> formula  (raw cols + cross-element dims)
     def col(name, formula):
@@ -45,6 +68,31 @@ def main():
         return cid
 
     ds_table = {d["id"]: d["dataSourceTableId"]["id"] for d in ldm["datasets"] if d.get("dataSourceTableId")}
+
+    # --dashboard scoping + its filterContext date filter (relative "this month" -> Sigma)
+    _wid = lambda it: (((it.get("widget") or {}).get("insight") or {}).get("identifier") or {}).get("id")
+    target_iids = None; cm_filter = None
+    if a.dashboard:
+        dash = next((d for d in an.get("analyticalDashboards", []) if d["id"] == a.dashboard), None)
+        if dash:
+            target_iids = {_wid(it) for sec in dash["content"].get("layout", {}).get("sections", [])
+                           for it in sec.get("items", []) if _wid(it)}
+            # resolve the date column the date dimension maps to (for the filter)
+            dref = None
+            for d in ldm["datasets"]:
+                for r in d.get("references", []):
+                    for s in r.get("sources", []):
+                        if (s.get("target") or {}).get("type") == "date" and d.get("dataSourceTableId"):
+                            dref = f"[{P}/{d['dataSourceTableId']['id']}/{s['column'].replace('_', ' ').title()}]"
+            # find the relative date filter in the dashboard's filterContext
+            ref = (dash["content"].get("filterContextRef") or {}).get("identifier", {}).get("id")
+            fc = next((f for f in an.get("filterContexts", []) if f["id"] == ref), None)
+            if fc and dref:
+                for fl in fc["content"].get("filters", []):
+                    df = fl.get("dateFilter")
+                    if df and df.get("type") == "relative" and "month" in (df.get("granularity") or "").lower():
+                        if df.get("from") == 0 and df.get("to") == 0:
+                            cm_filter = f'DateTrunc("month", {dref}) = DateTrunc("month", Today())'
 
     def dim_ref(attr_id):
         a_ = attr[attr_id]
@@ -96,13 +144,19 @@ def main():
         return out
 
     for iid, ins in insights.items():
+        if target_iids is not None and iid not in target_iids: continue  # --dashboard scope
         url = ins["content"]["visualizationUrl"]; title = ins["title"]
         if url in FLAGGED:
             flags.append({"insight": iid, "url": url, "reason": f"{url} has no Sigma equivalent → migrate as table or skip"}); continue
         meas = measures_of(ins)
         if any(f is None for _, _, f in meas):
             flags.append({"insight": iid, "reason": "measure uses workbook-level MAQL (BY ALL / FOR)"}); continue
-        mcols = [{"id": cid(t) or m, "formula": f, "name": t} for m, t, f in meas]
+        mcols = []
+        for m, t, f in meas:
+            col = {"id": cid(t) or m, "formula": apply_filter(f, cm_filter), "name": t}
+            fmt = gd_fmt(metric_fmt.get(m))
+            if fmt: col["format"] = fmt
+            mcols.append(col)
 
         if url == "local:headline":          # KPI
             page_elements.append({"id": iid, "kind": "kpi-chart", "name": title, "source": SRC,
@@ -153,6 +207,7 @@ def main():
         return f"[{P}/{tbl[ds_id]}/{scol.replace('_', ' ').title()}]"  # [FACT/DATE_DIM/Full Date]
 
     for m in an.get("metrics", []):
+        if a.dashboard: break  # trend metric isn't a dashboard widget; skip in single-dashboard mode
         mm = metric_maql.get(m["id"], "")
         fp = re.search(r"FOR\s+(PREVIOUS|NEXT)\(\s*\{label/([^.}]+)\.(\w+)\}(?:\s*,\s*(\d+))?\s*\)", mm, re.I)
         base = re.search(r"\{metric/([^}]+)\}", mm)
@@ -178,6 +233,9 @@ def main():
     # GoodData dashboards use a 12-col grid (widget size.xl.gridWidth); Sigma uses
     # 24 cols. Map section→row band, gridWidth→column span (×2), apply layout XML
     # as the LAST write (a bare spec without it stacks every element full-width).
+    # (the dashboard date filter is baked into each measure as a conditional
+    # aggregate via apply_filter() — works across KPIs/charts/pivots, unlike
+    # element-level filters which don't propagate to pivots and broke line charts)
     elem_by_id = {e["id"]: e for e in page_elements}
     KPI_H, BODY_H, GAP = 6, 13, 1
 
