@@ -88,6 +88,18 @@ Original findings (for reference):
   `DateLookback(<measure>, "month", -1)` in a date-grouped workbook element
   (build_workbook addition). Parity target: prior-period net revenue vs Snowflake.
 
+## Dashboard layout (implemented)
+
+`build_workbook` emits one Sigma page per GoodData dashboard and a top-level
+`layout` XML built from the dashboard's own grid: each `layout.sections[]` → a row
+band, each widget's `size.xl.gridWidth` (GoodData 12-col) → a Sigma 24-col span
+(×2), KPIs short / charts+tables taller. Applied as the LAST write (a bare spec
+stacks every element full-width). Non-dashboard auto-elements (e.g. the FOR
+PREVIOUS trend) go on an "Other" page. Rendered result: KPI strip + 2-up charts,
+structurally faithful to the source dashboard. (Pixel side-by-side pending — the
+GoodData trial visual-export API 500'd; layout is derived from the dashboard spec
+so it mirrors by construction.)
+
 ## Parity strategy
 
 GoodData Cloud computes on the customer warehouse, so the same-warehouse parity
@@ -95,8 +107,35 @@ play works. Caveats to prove out live:
 - **FlexQuery / compute-only metrics** may have no clean SQL equivalent — flag,
   don't fake; confirm which MAQL constructs round-trip to warehouse SQL.
 - Apply dashboard `filterContext` when checking insight totals.
-- `sql`-backed datasets → Custom-SQL element parity (watch the known
-  custom-SQL-via-spec limitation; prefer a join/warehouse-table where possible).
+- `sql`-backed datasets → **warehouse-table on the FROM table** (implemented).
+  Sigma's spec API can't resolve columns on a `kind:"sql"` source (it would have to
+  RUN the query to discover output columns — the known custom-SQL-via-spec
+  limitation), so convert.py maps a SQL dataset to a warehouse-table on its parsed,
+  db-qualified FROM table. SQL-derived alias columns (a synthetic grain key) are
+  translated to Sigma formulas (`||`→`&`, `CAST(x AS VARCHAR)`→`Text(x)`, bare
+  idents→`[TABLE/col]`, quote-aware); passthrough columns map straight through;
+  anything untranslatable is flagged. Composite-key facts need this (GoodData
+  requires a single-attribute grain → a synthetic key in SQL).
+
+## References — two GoodData shapes (both handled)
+
+convert.py reads BOTH `references[]` shapes: legacy `sources:[{column,target:{id,type}}]`
+(incl. dateInstance links via `target.type=="date"`) AND current GoodData Cloud
+`sourceColumns:["FK_COL"]` whose target is the **referenced dataset's grain**
+attribute. References whose target isn't a dataset (a dateInstance/date-dimension
+link) are skipped — the date column stays a plain column. A fresh convert rebuilds
+relationships under either shape (they were silently lost when only `sources` was read).
+
+## Dashboard date filter → a Sigma control (not baked predicates)
+
+A dashboard's relative date filter (`filterContext`) becomes ONE Sigma `date-range`
+control over a **hidden master detail table** that every KPI/chart/pivot sources;
+the filter propagates down the source lineage to all elements — including the pivot,
+which can't honor a direct element filter (the "filter the SOURCE, not the pivot"
+path around the pivot-filter-drop bug). GoodData relative `{month, from 0, to 0}` →
+`mode:current, unit:month` ("this month"); `from==to==-n` → `mode:last`. The master's
+date column is parsed from the YYYYMMDD key with `MakeDate(y,m,d)` (NOT `Date()` —
+that fails the export). Keeps the migrated dashboard interactive, mirroring GoodData.
 
 ## Risks (ranked)
 
