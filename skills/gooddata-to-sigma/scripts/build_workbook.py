@@ -77,22 +77,21 @@ def main():
         if dash:
             target_iids = {_wid(it) for sec in dash["content"].get("layout", {}).get("sections", [])
                            for it in sec.get("items", []) if _wid(it)}
-            # resolve the date column the date dimension maps to (for the filter)
-            dref = None
-            for d in ldm["datasets"]:
-                for r in d.get("references", []):
-                    for s in r.get("sources", []):
-                        if (s.get("target") or {}).get("type") == "date" and d.get("dataSourceTableId"):
-                            dref = f"[{P}/{d['dataSourceTableId']['id']}/{s['column'].replace('_', ' ').title()}]"
+            # the fact's own YYYYMMDD date-key column (robust — no dependency on
+            # the export's relationship `sources`, which GoodData can drop)
+            fds = next((d for d in ldm["datasets"] if d["id"] == a.fact_dataset), None)
+            mk = re.search(r"(\w*DATE_KEY)\b", json.dumps(fds or {}), re.I)
+            dkey = f"[{P}/{mk.group(1).replace('_', ' ').title()}]" if mk else None
             # find the relative date filter in the dashboard's filterContext
             ref = (dash["content"].get("filterContextRef") or {}).get("identifier", {}).get("id")
             fc = next((f for f in an.get("filterContexts", []) if f["id"] == ref), None)
-            if fc and dref:
+            if fc and dkey:
                 for fl in fc["content"].get("filters", []):
                     df = fl.get("dateFilter")
-                    if df and df.get("type") == "relative" and "month" in (df.get("granularity") or "").lower():
-                        if df.get("from") == 0 and df.get("to") == 0:
-                            cm_filter = f'DateTrunc("month", {dref}) = DateTrunc("month", Today())'
+                    if df and df.get("type") == "relative" and "month" in (df.get("granularity") or "").lower() \
+                       and df.get("from") == 0 and df.get("to") == 0:
+                        # "this month" on a YYYYMMDD key: YYYYMM == current YYYYMM
+                        cm_filter = f"Floor({dkey} / 100) = Year(Today()) * 100 + Month(Today())"
 
     def dim_ref(attr_id):
         a_ = attr[attr_id]
@@ -174,7 +173,7 @@ def main():
                     "columns": dcols + mcols,
                     "groupings": [{"id": "g", "groupBy": [c["id"] for c in dcols], "calculations": [c["id"] for c in mcols]}]})
         elif url in CHART:                    # bar/column/line/area/donut/pie
-            kind = CHART[url]; dims = dims_of(ins, {"view", "segment", "stack"})
+            kind = CHART[url]; dims = dims_of(ins, {"view", "trend", "segment", "stack"})  # line/area use "trend"
             dcols = [{"id": cid(attr[a_]["title"]), "formula": dim_ref(a_), "name": attr[a_]["title"]} for a_ in dims]
             el = {"id": iid, "kind": kind, "name": title, "source": SRC, "columns": dcols + mcols}
             if kind in ("donut-chart", "pie-chart"):
