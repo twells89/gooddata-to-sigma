@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **This repository has moved and is no longer maintained here.**
+> The `gooddata-to-sigma` skill now lives in the consolidated monorepo:
+> **https://github.com/twells89/sigma-migration-skills** → `plugins/gooddata-to-sigma/`
+> This standalone repo is archived (read-only) and kept for reference only.
+
 # gooddata-to-sigma
 
 Claude Code plugin for migrating **GoodData Cloud** / **GoodData.CN** to
